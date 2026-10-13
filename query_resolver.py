@@ -117,7 +117,7 @@ def main() -> None:
     """Prompt for a query and optional form ID, then print matching rows."""
     query_text = input("Enter your query (English or Hindi): ").strip()
     form_id = _parse_form_id(input("Enter form ID (blank to search all forms): "))
-    resolve_query(query_text, form_id=form_id)
+    resolve_query(query_text, form_id=form_id, top_k=5)
 
 
 if __name__ == "__main__":

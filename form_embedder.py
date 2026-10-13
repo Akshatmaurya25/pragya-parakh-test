@@ -20,6 +20,13 @@ WHERE form_id = %s
 ORDER BY qus_ordering, id
 """
 
+ALL_QUESTIONS_QUERY = """
+SELECT form_id, department_id, ques_id,
+       question_captions, question_caption_hindi
+FROM public.questionl_details
+ORDER BY form_id, qus_ordering, id
+"""
+
 INSERT_QUERY = """
 INSERT INTO public.ques_embed (
     form_id,
@@ -64,10 +71,15 @@ def log_message(message: str, level: int = logging.INFO) -> None:
     LOGGER.log(level, message)
 
 
-def fetch_form_questions(form_id: int) -> list[dict[str, Any]]:
-    """Fetch ordered English/Hindi question captions for a form."""
-    log_message(f"Fetching questions for form_id={form_id}.")
-    rows = execute(QUESTION_QUERY, (form_id,))
+def fetch_form_questions(form_id: int | None) -> list[dict[str, Any]]:
+    """Fetch ordered captions for one form, or every question if ID is None."""
+    if form_id is None:
+        log_message("Fetching questions for all forms.")
+        rows = execute(ALL_QUESTIONS_QUERY)
+    else:
+        log_message(f"Fetching questions for form_id={form_id}.")
+        rows = execute(QUESTION_QUERY, (form_id,))
+
     decoded_rows = json.loads(rows)
     if not isinstance(decoded_rows, list) or not all(
         isinstance(row, dict) for row in decoded_rows
@@ -117,7 +129,7 @@ def _to_pgvector_literal(vector: list[float] | None) -> str | None:
 
 
 def prepare_embedding_rows(
-    form_id: int, questions: list[dict[str, Any]]
+    form_id: int | None, questions: list[dict[str, Any]]
 ) -> list[tuple[Any, ...]]:
     """Build target-table rows, embedding each available caption language."""
     english_embeddings = _embed_caption_column(questions, "question_captions")
@@ -156,26 +168,47 @@ def insert_form_embeddings(insert_rows: list[tuple[Any, ...]]) -> int:
     return inserted_count
 
 
-def embed_form(form_id: int) -> int:
-    """Fetch, embed, and insert all questions for the requested form."""
-    if not isinstance(form_id, int) or isinstance(form_id, bool) or form_id < 1:
-        raise ValueError("form_id must be a positive integer")
+def embed_form(form_id: int | None) -> int:
+    """Fetch, embed, and insert a form's questions or the entire question table."""
+    if form_id is not None and (
+        not isinstance(form_id, int) or isinstance(form_id, bool) or form_id < 1
+    ):
+        raise ValueError("form_id must be a positive integer or None")
 
     configure_logging()
-    log_message(f"Starting embedding job for form_id={form_id}.")
+    if form_id is None:
+        log_message("Starting embedding job for all forms.")
+    else:
+        log_message(f"Starting embedding job for form_id={form_id}.")
     questions = fetch_form_questions(form_id)
     insert_rows = prepare_embedding_rows(form_id, questions)
     inserted_count = insert_form_embeddings(insert_rows)
-    log_message(f"Embedding job completed for form_id={form_id}.")
+    if form_id is None:
+        log_message("Embedding job completed for all forms.")
+    else:
+        log_message(f"Embedding job completed for form_id={form_id}.")
     return inserted_count
 
 
+def _parse_form_id(value: str) -> int | None:
+    """Interpret an asterisk as a request to process all forms."""
+    if value.strip() == "*":
+        return None
+    try:
+        form_id = int(value)
+    except ValueError as error:
+        raise ValueError("Enter a positive form ID or * for all forms") from error
+    if form_id < 1:
+        raise ValueError("Enter a positive form ID or * for all forms")
+    return form_id
+
+
 def main() -> None:
-    """Prompt for a form ID and run its embedding job."""
+    """Prompt for a form ID or * and run the corresponding embedding job."""
     configure_logging()
     try:
-        form_id_text = input("Enter form ID: ").strip()
-        form_id = int(form_id_text)
+        form_id_text = input("Enter form ID (* for all forms): ").strip()
+        form_id = _parse_form_id(form_id_text)
         embed_form(form_id)
     except (TypeError, ValueError) as error:
         log_message(f"Invalid form ID or question data: {error}", logging.ERROR)

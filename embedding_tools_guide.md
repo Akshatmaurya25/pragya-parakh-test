@@ -47,9 +47,10 @@ python form_embedder.py
 
 The program asks for a form ID. It then:
 
-1. Checks that the form ID is a positive whole number.
+1. Checks that the input is either a positive whole-number form ID or `*`.
 2. Reads that form's questions from `public.questionl_details`, ordered by
-   `qus_ordering` and then `id`.
+   `qus_ordering` and then `id`. If the input was `*`, it reads every question,
+   ordered by form, `qus_ordering`, and `id`.
 3. Embeds the available English captions and Hindi captions separately.
 4. Matches each generated vector back to the question it came from.
 5. Inserts each question's form, department, question ID, captions, vectors,
@@ -57,15 +58,21 @@ The program asks for a form ID. It then:
 6. Prints progress and records progress in `form_embedder.log`, next to the
    Python file.
 
+To process every form, enter `*` at the form ID prompt. This embeds all
+questions in `public.questionl_details`; it may take longer and insert many
+rows. Each fetched row retains its own `form_id` when saved.
+
 ### Functions, in order of their role
 
-#### Constants: `QUESTION_QUERY` and `INSERT_QUERY`
+#### Constants: `QUESTION_QUERY`, `ALL_QUESTIONS_QUERY`, and `INSERT_QUERY`
 
 `QUESTION_QUERY` selects `form_id`, `department_id`, `ques_id`,
 `question_captions`, and `question_caption_hindi` from
 `public.questionl_details` for the requested form. The `%s` placeholder is
 filled safely by the database helper rather than by inserting the form ID
-directly into SQL text.
+directly into SQL text. `ALL_QUESTIONS_QUERY` selects those same fields from
+the whole question table, without a form filter, and sorts by form, question
+ordering, and row ID.
 
 `INSERT_QUERY` describes how to add rows to `public.ques_embed`. The database
 generates `id` automatically. The SQL fills `created_at` and `updated_at` with
@@ -86,10 +93,11 @@ indicates whether the message is ordinary progress or an error.
 
 #### `fetch_form_questions(form_id)`
 
-Runs `QUESTION_QUERY` for the given form. The database helper returns its rows
-as JSON text, so this function decodes that text into a Python list of
-dictionaries and checks that the result has the expected shape. It logs how
-many questions were fetched.
+Runs `QUESTION_QUERY` for a specific form, or `ALL_QUESTIONS_QUERY` when
+`form_id` is `None` (the meaning of `*` in the terminal). The database helper
+returns its rows as JSON text, so this function decodes that text into a
+Python list of dictionaries and checks that the result has the expected
+shape. It logs how many questions were fetched.
 
 #### `_embed_caption_column(rows, column)`
 
@@ -139,9 +147,9 @@ returns the database's inserted-row count.
 
 #### `embed_form(form_id)`
 
-This is the main reusable function. It checks the form ID, configures logging,
-fetches the questions, prepares their embeddings, inserts them, and returns
-the inserted-row count.
+This is the main reusable function. It accepts a positive form ID or `None`
+for all forms, configures logging, fetches the questions, prepares their
+embeddings, inserts them, and returns the inserted-row count.
 
 Other Python code can call it directly:
 
@@ -152,12 +160,20 @@ inserted_count = embed_form(299)
 print(f"Inserted {inserted_count} rows")
 ```
 
+To embed every form from another Python file, call `embed_form(None)`.
+
 #### `main()`
 
-Provides the command-line interaction: asks for a form ID, converts it to an
-integer, and calls `embed_form()`. Invalid form IDs/data and unexpected
-failures are logged; failures are re-raised so they are not silently treated
-as success.
+Provides the command-line interaction: asks for a form ID or `*`, interprets
+`*` as all forms, and calls `embed_form()`. Invalid form IDs/data and
+unexpected failures are logged; failures are re-raised so they are not
+silently treated as success.
+
+#### `_parse_form_id(value)`
+
+Turns the user's input into a positive integer form ID. The exact input `*`
+returns `None`, which tells `embed_form()` to select all forms. Other invalid,
+blank, zero, or negative values raise an error.
 
 The `if __name__ == "__main__":` block calls `main()` only when the file is
 run directly. Importing the module from another Python file does not prompt
