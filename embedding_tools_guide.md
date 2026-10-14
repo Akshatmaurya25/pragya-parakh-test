@@ -54,13 +54,15 @@ The program asks for a form ID. It then:
 3. Embeds the available English captions and Hindi captions separately.
 4. Matches each generated vector back to the question it came from.
 5. Inserts each question's form, department, question ID, captions, vectors,
-   and current timestamps into `public.ques_embed`.
+   embedding model name, and current timestamps into `public.ques_embed`.
 6. Prints progress and records progress in `form_embedder.log`, next to the
    Python file.
 
 To process every form, enter `*` at the form ID prompt. This embeds all
-questions in `public.questionl_details`; it may take longer and insert many
-rows. Each fetched row retains its own `form_id` when saved.
+questions in `public.questionl_details`; it may take longer and save many
+rows. Each fetched row retains its own `form_id` when saved. If a row with the
+same `(model, ques_id)` already exists in `ques_embed`, it is updated with the
+new captions and vectors instead of causing a duplicate-key error.
 
 ### Functions, in order of their role
 
@@ -74,10 +76,14 @@ directly into SQL text. `ALL_QUESTIONS_QUERY` selects those same fields from
 the whole question table, without a form filter, and sorts by form, question
 ordering, and row ID.
 
-`INSERT_QUERY` describes how to add rows to `public.ques_embed`. The database
+`INSERT_QUERY` describes how to save rows to `public.ques_embed`. The database
 generates `id` automatically. The SQL fills `created_at` and `updated_at` with
 the current time. `::vector` tells PostgreSQL to interpret each supplied
-embedding string as a pgvector value.
+embedding string as a pgvector value. The `model` column receives the model
+identifier defined in `embedder.py` (`krutrim-ai-labs/vyakyarth`) so each row
+records which model generated its embeddings. If `(model, ques_id)` already
+exists, `ON CONFLICT` updates the captions and vectors on that row and refreshes
+`updated_at`; the original row and `created_at` are preserved.
 
 #### `configure_logging()`
 
@@ -134,6 +140,7 @@ builds one database-ready tuple for every question. Each tuple contains:
 5. Hindi caption
 6. English vector, or `NULL`
 7. Hindi vector, or `NULL`
+8. Model name (`krutrim-ai-labs/vyakyarth`)
 
 It stops with an error if a question has no `ques_id`, because the question ID
 is needed to identify the question in the destination table.
@@ -142,8 +149,9 @@ is needed to identify the question in the destination table.
 
 If there are no rows to save, logs that fact and returns `0`. Otherwise it
 passes all tuples and `INSERT_QUERY` to `execute_many()` in `db_conn.py`. That
-helper executes the insert and commits the transaction. The function logs and
-returns the database's inserted-row count.
+helper executes the insert-or-update statements and commits the transaction.
+The function logs and returns the database's affected-row count (new rows plus
+rows updated because of a conflict).
 
 #### `embed_form(form_id)`
 

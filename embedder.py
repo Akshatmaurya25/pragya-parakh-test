@@ -5,16 +5,21 @@ from functools import lru_cache
 from typing import Sequence
 
 import numpy as np
-from FlagEmbedding import BGEM3FlagModel
+from sentence_transformers import SentenceTransformer
+
+# MODEL_NAME = "krutrim-ai-labs/vyakyarth"
+MODEL_NAME = "google/embeddinggemma-300m"
 
 
 @lru_cache(maxsize=1)
-def _load_model() -> BGEM3FlagModel:
+def _load_model() -> SentenceTransformer:
     """Load the model once and reuse it."""
-    return BGEM3FlagModel(
-        "BAAI/bge-m3",
-        use_fp16=False,
-    )
+    model = SentenceTransformer(MODEL_NAME)
+    return model
+    # return BGEM3FlagModel(
+    #     "BAAI/bge-m3",
+    #     use_fp16=False,
+    # )
 
 
 def embedder(text: str | Sequence[str]) -> np.ndarray:
@@ -35,13 +40,14 @@ def embedder(text: str | Sequence[str]) -> np.ndarray:
 
     result = _load_model().encode(
         texts,
-        batch_size=12,
-        max_length=512,
-        return_dense=True,
-        return_sparse=False,
-        return_colbert_vecs=False,
+        # batch_size=12,
+        # max_length=512,
+        # return_dense=True,
+        # return_sparse=False,
+        # return_colbert_vecs=False,
     )
 
-    vectors = np.asarray(result["dense_vecs"], dtype=np.float32)
+    # vectors = np.asarray(result["dense_vecs"], dtype=np.float32)
 
-    return vectors[0] if single else vectors
+    # return vectors[0] if single else vectors
+    return result[0] if single else result
