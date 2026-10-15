@@ -9,6 +9,8 @@ how to run them. In short:
   `public.ques_embed`.
 - `query_resolver.py` turns a user-entered question or phrase into a vector,
   compares it with saved vectors, and prints the closest matches.
+- `combined_query_resolver.py` searches with all three supported models and
+  prints per-model and combined comparison tables.
 
 ## A few terms in everyday language
 
@@ -27,9 +29,9 @@ how to run them. In short:
 
 Both files use two existing modules:
 
-- [`embedder.py`](./embedder.py) loads the multilingual `BAAI/bge-m3` model and
-  converts text into 1024-number vectors. The model is cached after its first
-  load so it can be reused in the same Python process.
+- [`embedder.py`](./embedder.py) loads the selected multilingual model and
+  converts text into vectors. Its supported models have different vector
+  dimensions. Loaded models are cached for reuse in the same Python process.
 - [`db_conn.py`](./db_conn.py) connects to PostgreSQL and provides database
   query and insert helpers. Connection settings are read from environment
   variables such as `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and
@@ -267,6 +269,42 @@ The original full results are returned unchanged.
 For example, if the database score is `0.87654`, the terminal displays
 `"similarity_percentage": "87.65%"`. This is just the score multiplied by 100;
 it should not be interpreted as an 87.65% probability of correctness.
+
+The terminal asks which embedding model to search with:
+
+1. `bge-m3` (`BAAI/bge-m3`)
+2. `krutrim-ai-labs/vyakyarth`
+3. `google/embeddinggemma-300m`
+
+The selected model is used both to create the search phrase's vector and to
+filter `ques_embed.model`. This prevents comparing vectors made by different
+models, which may have different dimensions and meanings. The model identifier
+used for the SQL filter matches the value stored in `ques_embed.model`. For
+BGE-M3, the encoder uses `BAAI/bge-m3` while the database label is `bge-m3`;
+the other two database labels are their listed model names.
+
+## `combined_query_resolver.py`: compare all models
+
+Run:
+
+```text
+python combined_query_resolver.py
+```
+
+It asks for a query and an optional form ID. A blank form ID searches all
+forms. It then embeds the query separately using BGE-M3, Vyakyarth, and
+EmbeddingGemma, and searches only rows stored for the corresponding model.
+Different model dimensions are therefore never compared against each other.
+
+The program prints one plain-text results table for each model, followed by a
+combined table. Per-model tables include the stored scalar row details,
+matched language, and similarity percentage; large embedding vectors are
+omitted. The combined table uses `(form_id, ques_id)` to align results and has
+one percentage column per model. If a question is not in a model's top results,
+that model's cell shows `—`. If both language vectors for the same question
+appear for one model, the combined table shows that model's higher score.
+`DEFAULT_TOP_K` in the file controls the number of nearest vectors retrieved
+for each model (currently 10).
 
 #### `_parse_form_id(value)`
 
