@@ -4,7 +4,12 @@ import json
 from typing import Any
 
 from db_conn import execute
-from embedder import embedder
+from embedder import (
+    DEFAULT_MODEL_NAME,
+    MODEL_OPTIONS,
+    MODEL_STORAGE_NAMES,
+    embedder,
+)
 
 
 def _to_pgvector_literal(vector: list[float]) -> str:
@@ -13,19 +18,19 @@ def _to_pgvector_literal(vector: list[float]) -> str:
 
 
 def _build_search_query(form_id: int | None) -> str:
-    """Build a query that ranks both language embeddings across a form or DB."""
+    """Build a model-filtered query ranking both language embeddings."""
     form_filter = "AND form_id = %s" if form_id is not None else ""
     return f"""
     WITH candidates AS (
         SELECT id, 'en' AS matched_language,
                1 - (embedding_en <=> %s::vector) AS similarity
         FROM public.ques_embed
-        WHERE embedding_en IS NOT NULL {form_filter}
+        WHERE model = %s AND embedding_en IS NOT NULL {form_filter}
         UNION ALL
         SELECT id, 'hi' AS matched_language,
                1 - (embedding_hi <=> %s::vector) AS similarity
         FROM public.ques_embed
-        WHERE embedding_hi IS NOT NULL {form_filter}
+        WHERE model = %s AND embedding_hi IS NOT NULL {form_filter}
     )
     SELECT qe.*, candidates.matched_language, candidates.similarity
     FROM candidates
@@ -39,6 +44,7 @@ def retrieve_top_k(
     query_text: str,
     form_id: int | None = None,
     top_k: int = 3,
+    model_name: str = DEFAULT_MODEL_NAME,
 ) -> list[dict[str, Any]]:
     """Return the closest stored question-embedding rows for a text query.
 
@@ -55,17 +61,35 @@ def retrieve_top_k(
         raise ValueError("form_id must be a positive integer or None")
     if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
         raise ValueError("top_k must be a positive integer")
+    supported_models = {model_id for _, model_id in MODEL_OPTIONS.values()}
+    if model_name not in supported_models:
+        raise ValueError(f"Unsupported embedding model: {model_name}")
+    storage_model_name = MODEL_STORAGE_NAMES[model_name]
 
     query_vector = _to_pgvector_literal(
-        embedder(query_text.strip()).tolist()
+        embedder(query_text.strip(), model_name=model_name).tolist()
     )
     query = _build_search_query(form_id)
 
     parameters: tuple[Any, ...]
     if form_id is None:
-        parameters = (query_vector, query_vector, top_k)
+        parameters = (
+            query_vector,
+            storage_model_name,
+            query_vector,
+            storage_model_name,
+            top_k,
+        )
     else:
-        parameters = (query_vector, form_id, query_vector, form_id, top_k)
+        parameters = (
+            query_vector,
+            storage_model_name,
+            form_id,
+            query_vector,
+            storage_model_name,
+            form_id,
+            top_k,
+        )
 
     rows = json.loads(execute(query, parameters))
     if not isinstance(rows, list) or not all(
@@ -79,9 +103,15 @@ def resolve_query(
     query_text: str,
     form_id: int | None = None,
     top_k: int = 3,
+    model_name: str = DEFAULT_MODEL_NAME,
 ) -> list[dict[str, Any]]:
     """Search, print compact matches, and return the complete rows."""
-    results = retrieve_top_k(query_text, form_id=form_id, top_k=top_k)
+    results = retrieve_top_k(
+        query_text,
+        form_id=form_id,
+        top_k=top_k,
+        model_name=model_name,
+    )
     display_results = []
     for row in results:
         display_row = {
@@ -114,10 +144,22 @@ def _parse_form_id(value: str) -> int | None:
 
 
 def main() -> None:
-    """Prompt for a query and optional form ID, then print matching rows."""
+    """Prompt for query, model, optional form ID, then print matching rows."""
     query_text = input("Enter your query (English or Hindi): ").strip()
+    print("Select embedding model:")
+    for option, (display_name, _) in MODEL_OPTIONS.items():
+        print(f"{option}. {display_name}")
+    model_choice = input("Enter model number (1-3): ").strip()
+    if model_choice not in MODEL_OPTIONS:
+        raise ValueError("Choose a model by entering 1, 2, or 3")
+    model_name = MODEL_OPTIONS[model_choice][1]
     form_id = _parse_form_id(input("Enter form ID (blank to search all forms): "))
-    resolve_query(query_text, form_id=form_id, top_k=5)
+    resolve_query(
+        query_text,
+        form_id=form_id,
+        top_k=10,
+        model_name=model_name,
+    )
 
 
 if __name__ == "__main__":

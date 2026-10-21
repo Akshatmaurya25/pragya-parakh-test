@@ -16,8 +16,9 @@ If the LLM is unreachable or misbehaves, the agent falls back to a plain
 search_questions call with a similarity-threshold check, so it is never worse
 than query_resolver.py.
 
-LLM: OpenRouter (OPENROUTER_API_KEY / OPENROUTER_MODEL) or local Ollama
-(OLLAMA_HOST / OLLAMA_MODEL); see LLM_PROVIDER.
+LLM: OpenRouter (OPENROUTER_API_KEY / OPENROUTER_MODEL), NVIDIA
+(NVIDIA_API_KEY / NVIDIA_MODEL) or local Ollama (OLLAMA_HOST / OLLAMA_MODEL);
+see LLM_PROVIDER, or pick one from LLMS (the Streamlit UI does).
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import dotenv
 import requests
 
 import tools as tool_registry
+from embedder import DEFAULT_MODEL_NAME
 
 dotenv.load_dotenv()
 
@@ -40,12 +42,15 @@ LOGGER = logging.getLogger("master_agent")
 # LLM provider: "openrouter" (default when OPENROUTER_API_KEY is set) or "ollama".
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_URL = os.getenv("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+NVIDIA_URL = os.getenv("NVIDIA_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
 LLM_PROVIDER = os.getenv(
     "LLM_PROVIDER", "openrouter" if OPENROUTER_API_KEY else "ollama"
 ).lower()
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 LLM_TIMEOUT_SECONDS = 90
 
 MAX_STEPS = 4                # planner iterations per user message
@@ -88,44 +93,77 @@ def ollama_chat(system: str, user: str, json_mode: bool = True) -> str:
     return response.json()["message"]["content"]
 
 
-def openrouter_chat(system: str, user: str, json_mode: bool = True) -> str:
-    """Call an OpenRouter model (OpenAI-compatible API) and return the text."""
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not set")
+def _openai_chat(
+    url: str,
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    json_mode: bool = True,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    """Call an OpenAI-compatible chat completions API and return the text."""
     payload: dict[str, Any] = {
-        "model": OPENROUTER_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "temperature": 0,
         "seed": 42,
+        **(extra or {}),
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}"}
-    response = requests.post(
-        OPENROUTER_URL, json=payload, headers=headers, timeout=LLM_TIMEOUT_SECONDS
-    )
+    headers = {"Authorization": f"Bearer {api_key}"}
+    response = requests.post(url, json=payload, headers=headers, timeout=LLM_TIMEOUT_SECONDS)
     if response.status_code == 400 and "response_format" in payload:
         # Some providers/free models reject JSON mode; the prompt already
         # demands JSON and _extract_json tolerates surrounding text.
         payload.pop("response_format")
-        response = requests.post(
-            OPENROUTER_URL, json=payload, headers=headers, timeout=LLM_TIMEOUT_SECONDS
-        )
+        response = requests.post(url, json=payload, headers=headers, timeout=LLM_TIMEOUT_SECONDS)
     response.raise_for_status()
     content = response.json()["choices"][0]["message"].get("content")
     if not content:
-        raise RuntimeError("OpenRouter returned an empty response")
+        raise RuntimeError(f"{model} returned an empty response")
     return content
+
+
+def openrouter_chat(system: str, user: str, json_mode: bool = True) -> str:
+    """Call an OpenRouter model and return the text."""
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set")
+    return _openai_chat(
+        OPENROUTER_URL, OPENROUTER_API_KEY, OPENROUTER_MODEL, system, user, json_mode
+    )
+
+
+def nvidia_chat(system: str, user: str, json_mode: bool = True) -> str:
+    """Call an NVIDIA-hosted model (integrate.api.nvidia.com) and return the text."""
+    if not NVIDIA_API_KEY:
+        raise RuntimeError("NVIDIA_API_KEY is not set")
+    return _openai_chat(
+        NVIDIA_URL, NVIDIA_API_KEY, NVIDIA_MODEL, system, user, json_mode,
+        # Thinking off: keeps content to the JSON decision.
+        extra={"chat_template_kwargs": {"enable_thinking": False}, "max_tokens": 2048},
+    )
 
 
 def default_llm(system: str, user: str, json_mode: bool = True) -> str:
     """Route to the configured provider."""
     if LLM_PROVIDER == "openrouter":
         return openrouter_chat(system, user, json_mode)
+    if LLM_PROVIDER == "nvidia":
+        return nvidia_chat(system, user, json_mode)
     return ollama_chat(system, user, json_mode)
+
+
+# Display name -> provider function, for UIs that let the user choose.
+LLMS: dict[str, Callable[..., str]] = {
+    f"Ollama ({OLLAMA_MODEL})": ollama_chat,
+    f"NVIDIA ({NVIDIA_MODEL.split('/')[-1]})": nvidia_chat,
+    f"OpenRouter ({OPENROUTER_MODEL})": openrouter_chat,
+}
 
 
 def _extract_json(raw: str) -> Any:
@@ -222,8 +260,13 @@ def _describe_matches(matches: list[dict[str, Any]]) -> str:
 
 
 class MasterAgent:
-    def __init__(self, llm: Callable[..., str] = default_llm) -> None:
+    def __init__(
+        self,
+        llm: Callable[..., str] = default_llm,
+        embedding_model: str = DEFAULT_MODEL_NAME,
+    ) -> None:
         self.llm = llm
+        self.embedding_model = embedding_model
         self.history: list[dict[str, str]] = []
 
     def handle(self, query: str) -> AgentResponse:
@@ -252,6 +295,7 @@ class MasterAgent:
         steps: list[dict[str, Any]] = []
         last_matches: list[dict[str, Any]] = []
         seen_calls: set[str] = set()
+        tool_registry.EMBEDDING_MODEL = self.embedding_model
 
         for _ in range(MAX_STEPS):
             try:

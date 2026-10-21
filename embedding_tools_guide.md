@@ -9,6 +9,8 @@ how to run them. In short:
   `public.ques_embed`.
 - `query_resolver.py` turns a user-entered question or phrase into a vector,
   compares it with saved vectors, and prints the closest matches.
+- `combined_query_resolver.py` searches with all three supported models and
+  prints per-model and combined comparison tables.
 
 ## A few terms in everyday language
 
@@ -27,9 +29,9 @@ how to run them. In short:
 
 Both files use two existing modules:
 
-- [`embedder.py`](./embedder.py) loads the multilingual `BAAI/bge-m3` model and
-  converts text into 1024-number vectors. The model is cached after its first
-  load so it can be reused in the same Python process.
+- [`embedder.py`](./embedder.py) loads the selected multilingual model and
+  converts text into vectors. Its supported models have different vector
+  dimensions. Loaded models are cached for reuse in the same Python process.
 - [`db_conn.py`](./db_conn.py) connects to PostgreSQL and provides database
   query and insert helpers. Connection settings are read from environment
   variables such as `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and
@@ -54,13 +56,15 @@ The program asks for a form ID. It then:
 3. Embeds the available English captions and Hindi captions separately.
 4. Matches each generated vector back to the question it came from.
 5. Inserts each question's form, department, question ID, captions, vectors,
-   and current timestamps into `public.ques_embed`.
+   embedding model name, and current timestamps into `public.ques_embed`.
 6. Prints progress and records progress in `form_embedder.log`, next to the
    Python file.
 
 To process every form, enter `*` at the form ID prompt. This embeds all
-questions in `public.questionl_details`; it may take longer and insert many
-rows. Each fetched row retains its own `form_id` when saved.
+questions in `public.questionl_details`; it may take longer and save many
+rows. Each fetched row retains its own `form_id` when saved. If a row with the
+same `(model, ques_id)` already exists in `ques_embed`, it is updated with the
+new captions and vectors instead of causing a duplicate-key error.
 
 ### Functions, in order of their role
 
@@ -74,10 +78,14 @@ directly into SQL text. `ALL_QUESTIONS_QUERY` selects those same fields from
 the whole question table, without a form filter, and sorts by form, question
 ordering, and row ID.
 
-`INSERT_QUERY` describes how to add rows to `public.ques_embed`. The database
+`INSERT_QUERY` describes how to save rows to `public.ques_embed`. The database
 generates `id` automatically. The SQL fills `created_at` and `updated_at` with
 the current time. `::vector` tells PostgreSQL to interpret each supplied
-embedding string as a pgvector value.
+embedding string as a pgvector value. The `model` column receives the model
+identifier defined in `embedder.py` (`krutrim-ai-labs/vyakyarth`) so each row
+records which model generated its embeddings. If `(model, ques_id)` already
+exists, `ON CONFLICT` updates the captions and vectors on that row and refreshes
+`updated_at`; the original row and `created_at` are preserved.
 
 #### `configure_logging()`
 
@@ -134,6 +142,7 @@ builds one database-ready tuple for every question. Each tuple contains:
 5. Hindi caption
 6. English vector, or `NULL`
 7. Hindi vector, or `NULL`
+8. Model name (`krutrim-ai-labs/vyakyarth`)
 
 It stops with an error if a question has no `ques_id`, because the question ID
 is needed to identify the question in the destination table.
@@ -142,8 +151,9 @@ is needed to identify the question in the destination table.
 
 If there are no rows to save, logs that fact and returns `0`. Otherwise it
 passes all tuples and `INSERT_QUERY` to `execute_many()` in `db_conn.py`. That
-helper executes the insert and commits the transaction. The function logs and
-returns the database's inserted-row count.
+helper executes the insert-or-update statements and commits the transaction.
+The function logs and returns the database's affected-row count (new rows plus
+rows updated because of a conflict).
 
 #### `embed_form(form_id)`
 
@@ -259,6 +269,42 @@ The original full results are returned unchanged.
 For example, if the database score is `0.87654`, the terminal displays
 `"similarity_percentage": "87.65%"`. This is just the score multiplied by 100;
 it should not be interpreted as an 87.65% probability of correctness.
+
+The terminal asks which embedding model to search with:
+
+1. `bge-m3` (`BAAI/bge-m3`)
+2. `krutrim-ai-labs/vyakyarth`
+3. `google/embeddinggemma-300m`
+
+The selected model is used both to create the search phrase's vector and to
+filter `ques_embed.model`. This prevents comparing vectors made by different
+models, which may have different dimensions and meanings. The model identifier
+used for the SQL filter matches the value stored in `ques_embed.model`. For
+BGE-M3, the encoder uses `BAAI/bge-m3` while the database label is `bge-m3`;
+the other two database labels are their listed model names.
+
+## `combined_query_resolver.py`: compare all models
+
+Run:
+
+```text
+python combined_query_resolver.py
+```
+
+It asks for a query and an optional form ID. A blank form ID searches all
+forms. It then embeds the query separately using BGE-M3, Vyakyarth, and
+EmbeddingGemma, and searches only rows stored for the corresponding model.
+Different model dimensions are therefore never compared against each other.
+
+The program prints one plain-text results table for each model, followed by a
+combined table. Per-model tables include the stored scalar row details,
+matched language, and similarity percentage; large embedding vectors are
+omitted. The combined table uses `(form_id, ques_id)` to align results and has
+one percentage column per model. If a question is not in a model's top results,
+that model's cell shows `—`. If both language vectors for the same question
+appear for one model, the combined table shows that model's higher score.
+`DEFAULT_TOP_K` in the file controls the number of nearest vectors retrieved
+for each model (currently 10).
 
 #### `_parse_form_id(value)`
 

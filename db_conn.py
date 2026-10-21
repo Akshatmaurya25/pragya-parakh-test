@@ -15,9 +15,9 @@ def get_db_connection():
 	return psycopg2.connect(
 		host=os.getenv("PGHOST", "localhost"),
 		port=os.getenv("PGPORT", "5432"),
-		dbname=os.getenv("PGDATABASE", "ParakhDB"),
-		user=os.getenv("PGUSER", "varunxsensei"),
-		password=os.getenv("PGPASSWORD", "1234"),
+		dbname=os.getenv("PGDATABASE"),
+		user=os.getenv("DB_USER"),
+		password=os.getenv("DB_PASS"),
 	)
 
 

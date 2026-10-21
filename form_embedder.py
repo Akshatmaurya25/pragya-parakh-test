@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from db_conn import execute, execute_many
-from embedder import embedder
+from embedder import MODEL_NAME, embedder
+import dotenv
 
+dotenv.load_dotenv()  
 
 LOGGER = logging.getLogger("form_embedder")
 LOG_FILE = Path(__file__).with_name("form_embedder.log")
@@ -36,14 +38,23 @@ INSERT INTO public.ques_embed (
     question_caption_hindi,
     embedding_en,
     embedding_hi,
+    model,
     created_at,
     updated_at
 )
 VALUES (
     %s, %s, %s, %s, %s,
-    %s::vector, %s::vector,
+    %s::vector, %s::vector, %s,
     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 )
+ON CONFLICT (model, ques_id) DO UPDATE
+SET form_id = EXCLUDED.form_id,
+    department_id = EXCLUDED.department_id,
+    question_caption = EXCLUDED.question_caption,
+    question_caption_hindi = EXCLUDED.question_caption_hindi,
+    embedding_en = EXCLUDED.embedding_en,
+    embedding_hi = EXCLUDED.embedding_hi,
+    updated_at = CURRENT_TIMESTAMP
 """
 
 
@@ -150,6 +161,7 @@ def prepare_embedding_rows(
                 question.get("question_caption_hindi"),
                 _to_pgvector_literal(english_embeddings.get(index)),
                 _to_pgvector_literal(hindi_embeddings.get(index)),
+                MODEL_NAME,
             )
         )
 
@@ -162,10 +174,12 @@ def insert_form_embeddings(insert_rows: list[tuple[Any, ...]]) -> int:
         log_message("There are no question rows to insert.")
         return 0
 
-    log_message(f"Inserting {len(insert_rows)} row(s) into public.ques_embed.")
-    inserted_count = execute_many(INSERT_QUERY, insert_rows)
-    log_message(f"Inserted {inserted_count} row(s) into public.ques_embed.")
-    return inserted_count
+    log_message(
+        f"Inserting or updating {len(insert_rows)} row(s) in public.ques_embed."
+    )
+    affected_count = execute_many(INSERT_QUERY, insert_rows)
+    log_message(f"Saved {affected_count} row(s) in public.ques_embed.")
+    return affected_count
 
 
 def embed_form(form_id: int | None) -> int:
@@ -176,6 +190,7 @@ def embed_form(form_id: int | None) -> int:
         raise ValueError("form_id must be a positive integer or None")
 
     configure_logging()
+    log_message(f"Embedding model: {MODEL_NAME}.")
     if form_id is None:
         log_message("Starting embedding job for all forms.")
     else:

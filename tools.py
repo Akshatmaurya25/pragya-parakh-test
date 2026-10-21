@@ -126,11 +126,17 @@ def call_tool(name: str, args: dict[str, Any] | None) -> dict[str, Any]:
 # Tools
 # --------------------------------------------------------------------------
 
+# Embedding model used by search tools; MasterAgent sets it per run.
+# ponytail: module global, not safe for concurrent multi-user sessions; thread
+# it through call_tool if this is ever served to several users at once.
+EMBEDDING_MODEL = "google/embeddinggemma-300m"
+
+
 def _default_retriever(query: str, form_id: int | None, top_k: int) -> list[dict[str, Any]]:
     """Existing vector search, imported lazily so tools load without models/DB."""
     from query_resolver import retrieve_top_k
 
-    return retrieve_top_k(query, form_id=form_id, top_k=top_k)
+    return retrieve_top_k(query, form_id=form_id, top_k=top_k, model_name=EMBEDDING_MODEL)
 
 
 RETRIEVER: Callable[[str, int | None, int], list[dict[str, Any]]] = _default_retriever
@@ -245,13 +251,17 @@ def get_form_questions(form_id: int) -> list[dict[str, Any]]:
     parameters={},
 )
 def list_forms() -> list[dict[str, Any]]:
+    from embedder import MODEL_STORAGE_NAMES
+
     return _db_rows(
         """
         SELECT form_id, COUNT(DISTINCT ques_id) AS questions
         FROM public.ques_embed
+        WHERE model = %s
         GROUP BY form_id
         ORDER BY form_id
-        """
+        """,
+        (MODEL_STORAGE_NAMES[EMBEDDING_MODEL],),
     )
 
 
