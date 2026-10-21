@@ -2,3 +2,4 @@ psycopg2
 sentence-transformers
 python-dotenv
 FlagEmbedding
+openrouter
