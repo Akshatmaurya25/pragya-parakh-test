@@ -2,8 +2,11 @@
 
 import json
 import logging
+import os
+import re
 import sys
 from typing import Any, Callable
+from urllib.parse import quote
 
 from db_conn import execute, execute_many
 from embedder import DEFAULT_MODEL_NAME, MODEL_NAME, MODEL_STORAGE_NAMES, embedder
@@ -72,6 +75,24 @@ def answer_text(raw: Any) -> str:
                 if str(o.get("OptionText") or "").strip()
             )
     return text
+
+
+# Photos are stored as relative paths ("Citizen/SurveyImages/x.jpg"); this
+# server prefix turns them into viewable URLs. Unset -> no photos shown.
+IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "").rstrip("/")
+IMAGE_PATH = re.compile(r'[^"\\\[\]{},]+?\.(?:jpe?g|png|webp|gif)\b', re.IGNORECASE)
+
+
+def image_urls(raw: Any, base_url: str | None = None) -> list[str]:
+    """Photo URLs in an answer: a plain image option or nested in add-more JSON."""
+    base = (IMAGE_BASE_URL if base_url is None else base_url).rstrip("/")
+    urls = []
+    for path in dict.fromkeys(p.strip() for p in IMAGE_PATH.findall(str(raw or ""))):
+        if path.lower().startswith(("http://", "https://")):
+            urls.append(path)
+        elif base:
+            urls.append(f"{base}/{quote(path.lstrip('/'))}")
+    return urls
 
 
 def embed_distinct(
@@ -162,6 +183,16 @@ def _selftest() -> None:
     assert answer_text('[{"OptionID":"","OptionText":""}]') == ""
     assert answer_text(" free text ") == "free text"
     assert answer_text("[not json") == "[not json"
+    base = "https://img.example"
+    plain = '[{"OptionID":"jpg,77.42,23.24","OptionText":"Citizen/SurveyImages/9_1184_SurveyImg.jpg"}]'
+    assert image_urls(plain, base) == [f"{base}/Citizen/SurveyImages/9_1184_SurveyImg.jpg"]
+    nested = (
+        r'[{"OptionID":"0","OptionText":"[[{\"answerValue\":{\"optionID\":\"png,79.89,22.02\",'
+        r'\"optionText\":\"Tribal Affairs Department/SurveyImages/0_5338.png\"}}]]"}]'
+    )
+    assert image_urls(nested, base) == [f"{base}/Tribal%20Affairs%20Department/SurveyImages/0_5338.png"]
+    assert image_urls(plain, "") == []
+    assert image_urls('[{"OptionID":"1","OptionText":"Rural"}]', base) == []
     print("selftest ok")
 
 

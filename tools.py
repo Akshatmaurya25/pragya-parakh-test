@@ -295,9 +295,20 @@ def search_answers(
         query, form_id=form_id, top_k=top_k, ques_id=ques_id, model_name=EMBEDDING_MODEL
     )
     for row in rows:
+        _attach_photos(row)
         if row.get("similarity") is not None:
             row["similarity"] = round(float(row["similarity"]), 3)
     return rows
+
+
+def _attach_photos(row: dict[str, Any]) -> None:
+    """Swap a photo answer's file path for viewable URLs in row["photos"]."""
+    from answer_embedder import image_urls
+
+    photos = image_urls(row.get("ans_value"))
+    if photos:
+        row["photos"] = photos
+        row["ans_value"] = "photo"
 
 
 @tool(
@@ -328,7 +339,9 @@ def get_submission(ans_submission_id: str) -> list[dict[str, Any]]:
         (ans_submission_id,),
     )
     for row in rows:
-        row["ans_value"] = answer_text(row["ans_value"])
+        _attach_photos(row)
+        if not row.get("photos"):
+            row["ans_value"] = answer_text(row["ans_value"])
     return rows
 
 

@@ -25,6 +25,14 @@ if "agent" not in st.session_state or st.sidebar.button("Clear chat"):
 def show_details(matches, trace, answers=()):
     if not matches and not answers and not trace.get("steps"):
         return
+    photos = [
+        (url, a.get("question_caption") or a.get("question_captions") or "")
+        for a in answers
+        for url in a.get("photos") or []
+    ]
+    if photos:
+        with st.expander(f"Photos ({len(photos)})", expanded=True):
+            st.image([u for u, _ in photos], caption=[c for _, c in photos], width=180)
     with st.expander("Matches & tool calls"):
         if answers:
             st.caption("Answers")

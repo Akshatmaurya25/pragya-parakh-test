@@ -237,6 +237,11 @@ values with counts, a comparison, a submission's key answers). Use readable \
 column headers.
 - Give ids or exact raw values only if the user explicitly asks for them \
 (e.g. "give me the form id", "show raw data", "exact values").
+- Photo answers come with a "photos" list of URLs. When the user asks for \
+photos/images, or a photo is the evidence for your answer, show them as \
+markdown images on their own line: ![<short caption>](<url>), copying the URL \
+exactly. Never write photo URLs or file paths as plain text and never make up \
+URLs. At most 6 photos per reply; if there are more, say how many.
 - If the data is small or inconclusive (e.g. only 2 responses), say so.
 - Mention only facts that appear in tool results. Never invent answers, \
 forms, questions or numbers."""
