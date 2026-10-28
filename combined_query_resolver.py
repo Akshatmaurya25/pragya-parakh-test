@@ -43,7 +43,7 @@ def _build_search_query(form_id: int | None) -> str:
     FROM candidates
     JOIN public.ques_embed AS qe ON qe.id = candidates.id
     ORDER BY candidates.similarity DESC, qe.id, candidates.matched_language
-    LIMIT %s
+    LIMIT %s 
     """
 
 

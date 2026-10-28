@@ -266,10 +266,115 @@ def list_forms() -> list[dict[str, Any]]:
 
 
 @tool(
+    name="search_answers",
+    description=(
+        "Semantic search over SUBMITTED answers of one form. Use when the user "
+        "asks what was answered or wants responses mentioning something. Needs "
+        "a form_id; get it from list_forms or search_questions first. Pass "
+        "ques_id to search the answers of one question only."
+    ),
+    parameters={
+        "query": {"type": "string", "description": "What the answer should say (English or Hindi)."},
+        "form_id": {"type": "integer", "description": "Form id.", "minimum": 1},
+        "top_k": {
+            "type": "integer",
+            "description": "How many answers to return (default 10).",
+            "minimum": 1,
+            "maximum": 50,
+        },
+        "ques_id": {"type": "integer", "description": "Restrict to one question id.", "minimum": 1},
+    },
+    required=["query", "form_id"],
+)
+def search_answers(
+    query: str, form_id: int, top_k: int = 10, ques_id: int | None = None
+) -> list[dict[str, Any]]:
+    from answer_embedder import retrieve_answers
+
+    rows = retrieve_answers(
+        query, form_id=form_id, top_k=top_k, ques_id=ques_id, model_name=EMBEDDING_MODEL
+    )
+    for row in rows:
+        if row.get("similarity") is not None:
+            row["similarity"] = round(float(row["similarity"]), 3)
+    return rows
+
+
+@tool(
+    name="get_submission",
+    description=(
+        "All answers of one submitted inspection, with question text, in form order. "
+        "Use after search_answers when the user wants the full submission/report."
+    ),
+    parameters={
+        "ans_submission_id": {"type": "string", "description": "Submission id from search_answers."},
+    },
+    required=["ans_submission_id"],
+)
+def get_submission(ans_submission_id: str) -> list[dict[str, Any]]:
+    from answer_embedder import answer_text
+
+    rows = _db_rows(
+        """
+        SELECT fr.form_id, fr.ques_id, q.question_captions, q.question_caption_hindi,
+               fr.ans_value, fr.user_id, fr.insert_dt
+        FROM public.form_respond_details AS fr
+        LEFT JOIN public.questionl_details AS q
+               ON q.form_id = fr.form_id AND q.ques_id = fr.ques_id
+        WHERE fr.ans_submissiom_id = %s
+        ORDER BY q.qus_ordering, fr.id
+        LIMIT 300
+        """,
+        (ans_submission_id,),
+    )
+    for row in rows:
+        row["ans_value"] = answer_text(row["ans_value"])
+    return rows
+
+
+@tool(
+    name="answer_summary",
+    description=(
+        "How one question was answered across all submissions: each distinct "
+        "answer value with its count, most common first. Use for 'how many said "
+        "yes', 'what are the common answers to X'. Get ques_id from search_questions."
+    ),
+    parameters={
+        "form_id": {"type": "integer", "description": "Form id.", "minimum": 1},
+        "ques_id": {"type": "integer", "description": "Question id.", "minimum": 1},
+    },
+    required=["form_id", "ques_id"],
+)
+def answer_summary(form_id: int, ques_id: int) -> list[dict[str, Any]]:
+    from answer_embedder import answer_text
+
+    rows = _db_rows(
+        """
+        SELECT TRIM(ans_value) AS ans_value, COUNT(*) AS responses
+        FROM public.form_respond_details
+        WHERE form_id = %s AND ques_id = %s AND NULLIF(TRIM(ans_value), '') IS NOT NULL
+        GROUP BY TRIM(ans_value)
+        ORDER BY responses DESC
+        LIMIT 500
+        """,
+        (form_id, ques_id),
+    )
+    # Option answers are JSON; several raw values can share one readable text.
+    counts: dict[str, int] = {}
+    for row in rows:
+        text = answer_text(row["ans_value"]) or "(blank)"
+        counts[text] = counts.get(text, 0) + int(row["responses"])
+    return [
+        {"answer": text, "responses": n}
+        for text, n in sorted(counts.items(), key=lambda kv: -kv[1])[:50]
+    ]
+
+
+@tool(
     name="query_submission_data",
     description=(
-        "Answer counts, totals or filters over SUBMITTED inspection data "
-        "(e.g. 'how many schools have sanitised toilets'). NOT AVAILABLE YET: "
+        "Complex counts, totals or filters over SUBMITTED inspection data that "
+        "answer_summary cannot cover (several questions, districts, dates). NOT AVAILABLE YET: "
         "the NL->SQL stage is not connected, so calling it returns an error. "
         "Call it for such questions so the user gets a clear explanation."
     ),
