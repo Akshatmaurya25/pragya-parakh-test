@@ -3,20 +3,23 @@
 Run: streamlit run app.py
 """
 
-import json
-
 import streamlit as st
 
-from db_conn import execute
-from embedder import MODEL_OPTIONS
-from master_agent import LLMS, MasterAgent
-from tools import get_form_questions
-
-EMBEDDING_MODELS = dict(MODEL_OPTIONS.values())  # display name -> model id
+from parakh.agent.llm import LLMS
+from parakh.agent.master_agent import MasterAgent
+from parakh.config import DEFAULT_EMBEDDING_MODEL, EMBEDDING_MODELS
+from parakh.questions import get_form_questions, list_forms
 
 st.set_page_config(page_title="Parakh Assistant", page_icon="💬")
 st.title("Parakh Assistant")
 
+# Settings: first LLM (NVIDIA) and Vyakyarth are the defaults.
+llm_name = st.sidebar.selectbox("LLM", list(LLMS))
+embedding_model = st.sidebar.selectbox(
+    "Embedding model",
+    list(EMBEDDING_MODELS),
+    index=list(EMBEDDING_MODELS).index(DEFAULT_EMBEDDING_MODEL),
+)
 if "agent" not in st.session_state or st.sidebar.button("Clear chat"):
     st.session_state.agent = MasterAgent()
     st.session_state.messages = []
@@ -55,22 +58,8 @@ def show_details(matches, trace, answers=()):
 
 
 @st.cache_data(ttl=300)
-def embedded_forms():
-    """Forms present in ques_embed, with a name when the form master has one."""
-    try:
-        return json.loads(execute(
-            """
-            SELECT qe.form_id, MAX(f.form_name) AS form_name
-            FROM public.ques_embed AS qe
-            LEFT JOIN public.depertment_form_master AS f ON f.form_id = qe.form_id
-            GROUP BY qe.form_id
-            ORDER BY qe.form_id
-            """
-        ))
-    except Exception:  # no form master table in this DB: list ids only
-        return json.loads(execute(
-            "SELECT DISTINCT form_id, NULL AS form_name FROM public.ques_embed ORDER BY form_id"
-        ))
+def cached_forms(model):
+    return list_forms(model)
 
 
 @st.dialog("Form questions", width="large")
@@ -98,21 +87,23 @@ chat_tab, forms_tab = st.tabs(["Chat", "Forms"])
 
 with forms_tab:
     try:
-        forms = embedded_forms()
+        forms = cached_forms(embedding_model)
     except Exception as error:
         st.error(f"Could not load forms: {error}")
         forms = []
     if not forms:
-        st.info("No embedded forms yet. Run form_embedder.py first.")
+        st.info("No forms embedded with this model yet. Run: python -m scripts.embed")
     else:
-        widths = [1, 2, 6, 2]
-        for col, label in zip(st.columns(widths), ["S.No", "Form ID", "Form name", "View"]):
+        widths = [1, 2, 5, 2, 2]
+        headers = ["S.No", "Form ID", "Form name", "Questions", "View"]
+        for col, label in zip(st.columns(widths), headers):
             col.markdown(f"**{label}**")
         for i, form in enumerate(forms, 1):
-            sno, fid, name, view = st.columns(widths, vertical_alignment="center")
+            sno, fid, name, count, view = st.columns(widths, vertical_alignment="center")
             sno.write(str(i))
             fid.write(str(form["form_id"]))
             name.write(form["form_name"] or "—")
+            count.write(str(form["questions"]))
             if view.button("View", key=f"view_{form['form_id']}"):
                 show_form(form["form_id"], form["form_name"])
 
@@ -121,19 +112,13 @@ with chat_tab:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
-                show_details(msg["matches"], msg["trace"], msg.get("answers", ()))
-
-    with st.container():  # inline, so the selectors sit below it
-        prompt = st.chat_input("Ask about inspection forms (English / हिंदी)")
-
-    llm_col, emb_col = st.columns(2)
-    llm_name = llm_col.selectbox("LLM", list(LLMS), label_visibility="collapsed")
-    emb_name = emb_col.selectbox("Embedding model", list(EMBEDDING_MODELS), label_visibility="collapsed")
+                show_details(msg["matches"], msg["trace"], msg["answers"])
+    prompt = st.chat_input("Ask about inspection forms (English / हिंदी)")
 
 if prompt:
     agent = st.session_state.agent
     agent.llm = LLMS[llm_name]
-    agent.embedding_model = EMBEDDING_MODELS[emb_name]
+    agent.embedding_model = embedding_model
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.spinner("Thinking..."):
         try:
@@ -145,6 +130,6 @@ if prompt:
                 "answers": result.answers,
             }
         except Exception as error:  # DB down, model download failed, ...
-            reply = {"content": f"Error: {error}", "matches": [], "trace": {}}
+            reply = {"content": f"Error: {error}", "matches": [], "trace": {}, "answers": []}
     st.session_state.messages.append({"role": "assistant", **reply})
     st.rerun()
